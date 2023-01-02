@@ -42,6 +42,7 @@ class RoverState():
         self.total_time = None # To record total duration of naviagation
         self.previous_time = 0 # To record time of previous image taken initially zero for first image
         self.img = None # Current camera image
+        self.dst = 8
         self.pos = None # Current position (x, y)
         self.yaw = None # Current yaw angle
         self.previous_yaw = 0 # previous yaw angle
@@ -50,10 +51,13 @@ class RoverState():
         self.roll = None # Current roll angle
         self.vel = None # Current velocity
         self.steer = 0 # Current steering angle
+        self.dirc = 0  # Current Rover direction that calculates steering angles
         self.throttle = 0 # Current throttle value
         self.brake = 0 # Current brake value
         self.nav_angles = None # Angles of navigable terrain pixels
         self.nav_dists = None # Distances of navigable terrain pixels
+        self.obs_angles = None # Angles of obstcale terrain pixels
+        self.obs_dists = None # Distances of obstcale terrain pixels
         self.ground_truth = ground_truth_3d # Ground truth worldmap
         self.mode = 'forward' # Current mode (can be forward or stop)
         self.throttle_set = 0.2 # Throttle setting when accelerating
@@ -62,9 +66,10 @@ class RoverState():
         # of navigable terrain pixels.  This is a very crude form of knowing
         # when you can keep going and when you should stop.  Feel free to
         # get creative in adding new fields or modifying these!
-        self.stop_forward = 50 # Threshold to initiate stopping
-        self.go_forward = 800 # Threshold to go forward again
+        self.stop_forward = 500 # Threshold to initiate stopping
+        self.go_forward = 2000 # Threshold to go forward again
         self.max_vel = 2.5 # Maximum velocity (meters/second)
+        self.min_obs_dist = 0 # Minimum distance from obstacles to start turning away from it
         # Image output from perception step
         # Update this image to display your intermediate analysis steps
         # on screen in autonomous mode
@@ -82,7 +87,12 @@ class RoverState():
         self.send_pickup = False # Set to True to trigger rock pickup
 # Initialize our rover 
 Rover = RoverState()
-
+# Calculating distance from accelration = -1, initial velocity = Rover.max_vel , initial distance = 0
+# the result is v(t) = 0 at t = Rover.max_vel, and d(t) =  (-t)^2/2 
+# then + 0.5 is added to be more safe
+Rover.min_obs_dist = (Rover.max_vel * Rover.max_vel / 2) + 0.5
+print(Rover.min_obs_dist)
+print("\n\n\n")
 # Variables to track frames per second (FPS)
 # Intitialize frame counter
 frame_counter = 0
