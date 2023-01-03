@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import cv2
 import numpy as np
+import pandas as pd
 import socketio
 import eventlet
 import eventlet.wsgi
@@ -41,29 +42,43 @@ class RoverState():
         self.start_time = None # To record the start time of navigation
         self.total_time = None # To record total duration of naviagation
         self.previous_time = 0 # To record time of previous image taken initially zero for first image
+        self.rock_detect_time = 0 # To record time when rock is detected
+        self.turning_initial_time = 0 # To record time when turning starts
+        self.turning_final_time = 0 # To record time when turning finish
+        self.turn_time_threshold = 5 # Threshold to indicate rover have been turning in place for a long time
+        self.is_best_yaw_determined = False # Flag to indicate that best yaw is determined when turning for a long time
+        self.turn_best_yaw_list = [] # list of lists with all yaw and nav_tot_ratio pairs
+        self.turn_best_yaw = 0 # Best yaw angle that has teh highest nav_tot_ratio
+        self.isturning = False # Flag to indicate whthear rover is turning or not
         self.img = None # Current camera image
-        self.dst = 10
+        self.dst = 7
+        self.heuristic_dst = 15
+        self.scale_factor = 2
+        self.scale = 0
         self.pos = None # Current position (x, y)
         self.yaw = None # Current yaw angle
         self.previous_yaw = 0 # previous yaw angle
         self.acc_yaw_rate = 0 # accumlative yaw rate that resets every fixed interval
-        self.yaw_turn_thresh = 1500 # Threhold to indicate the rover is turning in a big arc
-        self.yaw_loop_thresh = 2500 # Threhold to indicate the rover is turning in circles
+        self.yaw_turn_thresh = 1000 # Threhold to indicate the rover is turning in a big arc
+        self.yaw_sample_turn_thresh = 4000 # Threhold to indicate the rover is turning in circles in sample mode
+        self.yaw_loop_thresh = 1700 # Threhold to indicate the rover is turning in circles
         self.pitch = None # Current pitch angle
         self.roll = None # Current roll angle
         self.vel = None # Current velocity
         self.steer = 0 # Current steering angle
         self.dirc = 0  # Current Rover direction that calculates steering angles
-        self.dirc_num = 5 # Number of directions to consider for each image
+        self.dirc_num = 15 # Number of directions to consider for each image
         self.throttle = 0 # Current throttle value
         self.brake = 0 # Current brake value
         self.nav_angles = None # Angles of navigable terrain pixels
         self.nav_dists = None # Distances of navigable terrain pixels
         self.obs_angles = None # Angles of obstcale terrain pixels
         self.obs_dists = None # Distances of obstcale terrain pixels
+        self.rock_angles = None # Angles of rock terrain pixels
+        self.rock_dists = None # Distances of rock terrain pixels
         self.ground_truth = ground_truth_3d # Ground truth worldmap
-        self.mode = 'forward' # Current mode (can be forward or stop)
-        self.throttle_mode = "accel" # Current throttle mode (can be accel or decel)
+        self.mode = 'forward' # Current mode (can be forward or stop or sample)
+        self.throttle_mode = "accel" # Current throttle mode (can be accel or constant)
         self.throttle_set = 0.2 # Throttle setting when accelerating
         self.brake_set = 10 # Brake setting when braking
         # The stop_forward and go_forward fields below represent total count
@@ -71,17 +86,17 @@ class RoverState():
         # when you can keep going and when you should stop.  Feel free to
         # get creative in adding new fields or modifying these!
         self.nav_tot_ratio = 0 # navigable terrain size / total terrain size
-        self.forward_thresh = 0.08 # Threshold to initiate moving based on nav_tot_ratio
-        self.stop_thresh = 0.04 # Threshold to initiate stopping based on nav_tot_ratio
+        self.forward_thresh = 0.07 # Threshold to initiate moving based on nav_tot_ratio
+        self.stop_thresh = 0.05 # Threshold to initiate stopping based on nav_tot_ratio
         self.nav_obs_ratio = 0 # navigable terrain size / obstacel terrain size
-        self.accel_thresh = 0.2 # Threshold to initiate accelration based on nav_obs_ratio
-        self.decel_thresh = 0.09 # Threshold to initiate decelration based on nav_obs_ratio
-        self.accel_factor = 0.8 # Factor to fine-tune accel/decel values
-        self.turn_obs_dist = 0 # Minimum distance from obstacles to start turning away from it
+        self.accel_thresh = 0.12 # Threshold to initiate accelration based on nav_obs_ratio
+        self.constant_thresh = 0.07 # Threshold to initiate constant velocity based on nav_obs_ratio
+        self.accel_factor = 1 # Factor to fine-tune accel value
+        self.turn_obs_dist = 0 # Turning distance from obstacles to start turning away from it
         self.min_obs_dist = 0 # Minimum distance from nearest obstacle to rover
-        self.stop_dist = 1.5 # Rover stops when the nearest obstacle is at this distance 
-        self.stop_forward = 500 # Threshold to initiate stopping
-        self.go_forward = 2000 # Threshold to go forward again
+        self.min_obs_dirc = 1 # Direction of nearest obstacle to rover (+ve or -ve only)
+        self.stop_dist = 0 # Rover stops when the nearest obstacle is at this distance 
+        self.min_stop_dist = 1.4 # Minimum value of stop distance
         self.max_vel = 4 # Maximum velocity (meters/second)
         # Image output from perception step
         # Update this image to display your intermediate analysis steps
@@ -91,21 +106,47 @@ class RoverState():
         # Update this image with the positions of navigable terrain
         # obstacles and rock samples
         self.worldmap = np.zeros((200, 200, 3), dtype=np.float) 
+        self.fake_worldmap = np.zeros((200, 200, 3), dtype=np.float)  # a fake world mape for processing only
+        self.fake_perception_worldmap = np.zeros((200, 200, 3), dtype=np.float)  # a fake world mape for perception only
         self.samples_pos = None # To store the actual sample positions
+        self.sample_yaw= 0 # Original yaw angle before entering sample mode
+        self.sample_angle = 0 # last known average sample angle
+        self.sample_timer = 0 # time elasped in smaple mode
+        self.yaw_sample_counter = 0 # counter of turns in sample mode without moving aprox
+        self.sample_cooldown  = 0 # Record time at which sample mode failed to pick up rock and wait some seconds after this time before entering smaple mode again
         self.samples_to_find = 0 # To store the initial count of samples
+        self.sample_thresh = 30 # threshold to indicate a rock sample is found
+        self.sample_turn_thresh  = 0 # threshold to start turning in sample mode
+        self.sample_near_thresh = 100 # threshold to indicate a rock sample is very close
+        self.rock_detect_initial_time = 0 # initial time when rock is detected in sample mode
+        self.rock_detect_cooldown = 2.5     # time at which counter is reset in sample mode
+        self.rock_detect_counter  = 0 # Counter of how mnay psuedo-consecutive rock pixels detected
+        self.rock_count_limit = 20   # upper limit to how many psuedo-consecutive rock pixels before giving control back to minimum distance for movement
         self.samples_located = 0 # To store number of samples located on map
         self.samples_collected = 0 # To count the number of samples collected
+        self.sample_min_dist  = 0 # Minimum distance of sample to Rover
         self.near_sample = 0 # Will be set to telemetry value data["near_sample"]
         self.picking_up = 0 # Will be set to telemetry value data["picking_up"]
         self.send_pickup = False # Set to True to trigger rock pickup
+        self.debugging_path = ""  # debugging path
+        self.image_df = pd.DataFrame(columns=["X_position","Y_position","yaw"],dtype=np.int8) # relative information for debugging mode
+
 # Initialize our rover 
 Rover = RoverState()
 # Calculating distance from accelration = -1, initial velocity = Rover.max_vel , initial distance = 0
 # the result is v(t) = 0 at t = Rover.max_vel, and d(t) =  (-t)^2/2 
-# max and min distance are 3,5 respectively 
-Rover.turn_obs_dist = np.clip((Rover.max_vel * Rover.max_vel / 2),3,5)
-print(Rover.turn_obs_dist)
-print("\n\n\n")
+# max and min distance are 3,6 respectively 
+#Rover.turn_obs_dist = np.clip((Rover.max_vel * Rover.max_vel / 2),3,6)
+Rover.scale = Rover.scale_factor * Rover.dst
+Rover.forward_thresh *= Rover.dst/Rover.heuristic_dst
+Rover.stop_thresh *= Rover.dst/Rover.heuristic_dst
+Rover.accel_thresh *= Rover.dst/Rover.heuristic_dst
+Rover.constant_thresh *= Rover.dst/Rover.heuristic_dst
+Rover.sample_thresh *= Rover.dst/Rover.heuristic_dst 
+Rover.accel_factor /= Rover.dst/Rover.heuristic_dst 
+#Rover.sample_near_thresh /= Rover.dst/Rover.heuristic_dst 
+print("dst:\t",Rover.dst,"\tScale:\t",Rover.scale,"\tthreshold factor:\t",Rover.dst/Rover.heuristic_dst,"\n\n\n")
+
 # Variables to track frames per second (FPS)
 # Intitialize frame counter
 frame_counter = 0
@@ -113,11 +154,9 @@ frame_counter = 0
 second_counter = time.time()
 fps = None
 
-
 # Define telemetry function for what to do with incoming data
 @sio.on('telemetry')
 def telemetry(sid, data):
-
     global frame_counter, second_counter, fps
     frame_counter+=1
     # Do a rough calculation of frames per second (FPS)
@@ -129,15 +168,16 @@ def telemetry(sid, data):
 
     if data:
         global Rover
+        Rover.debugging_path = args.image_folder 
         # Initialize / update Rover with current telemetry
         Rover, image = update_rover(Rover, data)
-
+        if(Rover.total_time < 1):
+            Rover.initial_pos = Rover.pos
         if np.isfinite(Rover.vel):
-
             # Execute the perception and decision steps to update the Rover's state
             Rover = perception_step(Rover)
             Rover = decision_step(Rover)
-
+            
             # Create output images to send to server
             out_image_string1, out_image_string2 = create_output_images(Rover)
 
@@ -167,9 +207,12 @@ def telemetry(sid, data):
         # Example: $ python drive_rover.py image_folder_path
         # Conditional to save image frame if folder was specified
         if args.image_folder != '':
+            # append image info to image_df
+            Rover.image_df.loc[len(Rover.image_df)] = [Rover.pos[0],Rover.pos[1],Rover.yaw]
             timestamp = datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S_%f')[:-3]
             image_filename = os.path.join(args.image_folder, timestamp)
             image.save('{}.jpg'.format(image_filename))
+           # Rover.image_df.to_csv(args.image_folder + "/image_info.csv",index=False)
 
     else:
         sio.emit('manual', data={}, skip_sid=True)

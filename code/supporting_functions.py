@@ -21,8 +21,10 @@ def update_yaw_rate(Rover):
     # update previous yaw and previous time  to current for next iteration
     Rover.previous_yaw = Rover.yaw
     Rover.previous_time = Rover.total_time
+    # if Rover stopped then reset acc_yaw_rate
+    if Rover.mode == "stop" :  Rover.acc_yaw_rate = 0
     # reset acc yaw rate each 10 seconds else it keeps adding
-    Rover.acc_yaw_rate = (yaw_rate + Rover.acc_yaw_rate) if(int(Rover.total_time)%10 != 0) else 0
+    else : Rover.acc_yaw_rate = (yaw_rate + Rover.acc_yaw_rate) if(int(Rover.total_time)%10 != 0) else 0
 
 def convert_to_float(string_to_convert):
     if ',' in string_to_convert:
@@ -73,6 +75,7 @@ def update_rover(Rover, data):
     update_yaw_rate(Rover)  
     print('speed =', Rover.vel, 'position =', Rover.pos, 'throttle =',
           Rover.throttle, 'steer_angle =', Rover.steer, 'near_sample:', Rover.near_sample,
+          "sample_pos:",Rover.samples_pos, "samples_locatd:", Rover.samples_located,
           'picking_up:', data["picking_up"], 'sending pickup:', Rover.send_pickup,
           'total time:', Rover.total_time, 'samples remaining:', data["sample_count"],
           'samples collected:' ,Rover.samples_collected,"yaw angle = ",Rover.yaw, "accumalative yaw rate = ",Rover.acc_yaw_rate)
